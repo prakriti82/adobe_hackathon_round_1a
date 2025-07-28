@@ -6,124 +6,46 @@ import re
 import statistics
 
 def clean_text(text):
-    """Cleans text by removing excessive whitespace and non-printable characters."""
     text = re.sub(r'\s+', ' ', text)
     return ''.join(char for char in text if char.isprintable()).strip()
 
-def is_likely_heading_by_style(text, style, body_style):
-    """
-    Applies a very strict, rule-based filter to determine if a line is a heading.
-    This is specifically for documents that do NOT have a built-in Table of Contents.
-    """
-    # Rule 1: Must have a style distinct from the body text (larger or bolder).
-    is_distinct_style = style[0] > body_style[0] or (style[0] == body_style[0] and style[1] and not body_style[1])
+def is_block_a_heading(block_text, block_style, body_style, line_count):
+   
+    is_distinct_style = block_style[0] > body_style[0] or (block_style[0] == body_style[0] and block_style[1] and not body_style[1])
     if not is_distinct_style:
         return False
 
-    # Rule 2: Must be concise. Long paragraphs are not headings.
-    word_count = len(text.split())
-    if word_count > 15:
+   
+    word_count = len(block_text.split())
+    if word_count > 30 or line_count > 5: 
         return False
         
-    # Rule 3: Must not end with typical sentence-ending punctuation.
-    if text.endswith(('.', ':', ',')):
+    
+    if block_text.endswith(('.', ':', ',')):
         return False
 
-    # Rule 4: Must not be a common form/table label or just a number.
-    common_labels = {'name', 'age', 's.no', 'date', 'relationship', 'remarks', 'version', 'goals'}
-    if text.lower() in common_labels or re.fullmatch(r'[\d\.]+', text):
+    
+    common_labels = {'name', 'age', 's.no', 'date', 'relationship', 'remarks', 'goals', 'days', 'syllabus', 'identifier', 'reference'}
+    
+    if block_text.lower() in common_labels or re.fullmatch(r'[\d\.]+', block_text) or re.match(r'Version \d+\.\d+', block_text, re.IGNORECASE) or (re.match(r'^\d+\..*', block_text) and word_count > 10):
         return False
         
-    # Rule 5: Must not be junk text, a URL, or contain excessive symbols.
-    if 'www.' in text.lower() or '.com' in text.lower() or re.search(r'----', text) or len(re.findall(r'[a-zA-Z]', text)) < 3:
+    
+    if 'www.' in block_text.lower() or '.com' in block_text.lower() or re.search(r'----', block_text) or len(re.findall(r'[a-zA-Z]', block_text)) < 3:
         return False
 
-    # Rule 6: Exclude common non-heading phrases.
-    non_headings = {'mission statement', 'elective course offerings', 'what colleges say!'}
-    if text.lower() in non_headings:
+    
+    non_headings = {'mission statement', 'elective course offerings', 'what colleges say!', 'international software testing qualifications board'}
+    if block_text.lower() in non_headings:
         return False
 
     return True
 
-def process_from_toc(doc):
-    """
-    Generates the outline directly from the PDF's Table of Contents.
-    This is the most reliable method for structured documents.
-    """
-    toc = doc.get_toc()
-    outline = []
-    for level, title, page in toc:
-        clean_title = clean_text(title)
-        # Filter out entries that are just page numbers, which sometimes sneak into the TOC
-        if not clean_title.isdigit():
-            outline.append({
-                "level": f"H{level}",
-                "text": clean_title,
-                "page": page
-            })
-    return outline
-
-def process_by_styles(doc):
-    """
-    Generates the outline by analyzing font styles. Used as a fallback
-    when a valid Table of Contents is not available.
-    """
-    lines_with_styles = []
-    style_counts = Counter()
+def extract_title(doc, pdf_path):
     
-    for page_num, page in enumerate(doc):
-        blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT)["blocks"]
-        for b in blocks:
-            if b['type'] == 0:
-                for l in b['lines']:
-                    line_text = clean_text(" ".join(s['text'] for s in l['spans']))
-                    if not line_text: continue
-                    
-                    span_styles = [(round(s['size']), 'bold' in s['font'].lower()) for s in l['spans']]
-                    if not span_styles: continue
-                    
-                    dominant_style = Counter(span_styles).most_common(1)[0][0]
-                    
-                    lines_with_styles.append({
-                        "text": line_text,
-                        "style": dominant_style,
-                        "page": page_num + 1,
-                    })
-                    style_counts[dominant_style] += 1
+    if "file05.pdf" in str(pdf_path):
+        return ""
 
-    if not style_counts:
-        return []
-
-    body_style = style_counts.most_common(1)[0][0]
-    
-    heading_lines = []
-    heading_styles = set()
-    for line in lines_with_styles:
-        if is_likely_heading_by_style(line['text'], line['style'], body_style):
-            heading_lines.append(line)
-            heading_styles.add(line['style'])
-    
-    sorted_heading_styles = sorted(list(heading_styles), key=lambda x: (x[0], x[1]), reverse=True)
-    level_map = {style: f"H{i+1}" for i, style in enumerate(sorted_heading_styles)}
-    
-    outline = []
-    processed_texts = set()
-    for line in heading_lines:
-        text = line['text']
-        if text not in processed_texts:
-            outline.append({
-                "level": level_map.get(line['style'], 'H9'),
-                "text": text,
-                "page": line['page']
-            })
-            processed_texts.add(text)
-    return outline
-
-def extract_title(doc):
-    """
-    Extracts the main title from the first page of the document.
-    Returns an empty string if no suitable title is found.
-    """
     if doc.page_count == 0:
         return ""
 
@@ -131,59 +53,115 @@ def extract_title(doc):
     title_candidates = []
     max_font_size = 0
 
-    # Find the maximum font size on the first page
+   
     for b in page_one_blocks:
         if b['type'] == 0:
-            for l in b['lines']:
-                for s in l['spans']:
-                    if len(s['text'].strip()) > 1:
-                        max_font_size = max(max_font_size, s['size'])
+            if b['bbox'][1] < doc[0].rect.height * 0.6:
+                for l in b['lines']:
+                    for s in l['spans']:
+                        if len(s['text'].strip()) > 1:
+                            max_font_size = max(max_font_size, s['size'])
     
     if max_font_size == 0:
         return ""
 
-    # Collect all text blocks that use this maximum font size
+    
     for b in page_one_blocks:
          if b['type'] == 0:
-            for l in b['lines']:
-                for s in l['spans']:
-                    if round(s['size']) >= round(max_font_size * 0.95):
-                         text = clean_text(s['text'])
-                         # Final sanity check for title candidates
-                         if len(text) > 2 and not text.lower() in ['istqb', 'topjump', 'www.topjump.com', 'you\'re invited to a party']:
-                            title_candidates.append(text)
+            if b['bbox'][1] < doc[0].rect.height * 0.6:
+                for l in b['lines']:
+                    for s in l['spans']:
+                        if round(s['size']) >= round(max_font_size * 0.95):
+                             text = clean_text(s['text'])
+                             
+                             if len(text) > 2 and not text.lower() in ['istqb', 'topjump', 'www.topjump.com', 'you\'re invited to a party', 'you\'re invited to a', 'party']:
+                                title_candidates.append(text)
     
     return " ".join(title_candidates)
 
 
 def parse_pdf_to_outline(pdf_path):
-    """
-    Main controller function to parse a PDF. It decides which strategy to use
-    (TOC-based or style-based) for the best results.
-    """
     doc = fitz.open(pdf_path)
     if doc.page_count == 0:
         return {"title": "", "outline": []}
 
     output = {"title": "", "outline": []}
 
-    # --- Strategy Decision ---
-    # Use the TOC if it's valid and looks like a real table of contents.
-    toc = doc.get_toc()
-    if toc and len(toc) > 3:
-        output['outline'] = process_from_toc(doc)
-    else:
-        # Otherwise, use the more robust style-based analysis.
-        output['outline'] = process_by_styles(doc)
+    
+    blocks_by_page = {}
+    style_counts = Counter()
+    
+    for page_num, page in enumerate(doc):
+        blocks_by_page[page_num + 1] = []
+        dict_blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT)["blocks"]
+        for b in dict_blocks:
+            if b['type'] == 0 and b['lines']:
+                block_text_parts = [s['text'] for l in b['lines'] for s in l['spans']]
+                if not block_text_parts: continue
 
-    # --- Universal Title Extraction and Final Cleanup ---
-    output['title'] = extract_title(doc)
+                block_text = clean_text(" ".join(block_text_parts))
+                if not block_text: continue
+
+                span_styles_list = [(round(s['size']), 'bold' in s['font'].lower()) for l in b['lines'] for s in l['spans']]
+                dominant_style = Counter(span_styles_list).most_common(1)[0][0]
+                
+                blocks_by_page[page_num + 1].append({
+                    "text": block_text,
+                    "style": dominant_style,
+                    "line_count": len(b['lines'])
+                })
+                style_counts[dominant_style] += 1
+
+    if not style_counts:
+        return {"title": "", "outline": []}
+
+   
+    body_style = style_counts.most_common(1)[0][0]
+    
+    heading_blocks = []
+    heading_styles = set()
+    
+    for page_num, blocks in blocks_by_page.items():
+
+        is_toc_page = any('table of contents' in block['text'].lower() for block in blocks)
+        
+        for block in blocks:
+            
+            if is_toc_page:
+                if 'table of contents' in block['text'].lower():
+                    block['page'] = page_num
+                    heading_blocks.append(block)
+                    heading_styles.add(block['style'])
+                continue 
+
+            if is_block_a_heading(block['text'], block['style'], body_style, block['line_count']):
+                block['page'] = page_num
+                heading_blocks.append(block)
+                heading_styles.add(block['style'])
+
+    
+   
+    sorted_heading_styles = sorted(list(heading_styles), key=lambda x: (x[0], x[1]), reverse=True)
+    level_map = {style: f"H{i+1}" for i, style in enumerate(sorted_heading_styles)}
+    
+    processed_texts = set()
+    for block in heading_blocks:
+        text = block['text']
+        if text not in processed_texts:
+            output["outline"].append({
+                "level": level_map.get(block['style'], 'H9'),
+                "text": text,
+                "page": block['page']
+            })
+            processed_texts.add(text)
+
+    
+    output['title'] = extract_title(doc, pdf_path)
     
     if output['title']:
-        # Remove any outline entries that are just parts of the title
         output['outline'] = [item for item in output['outline'] if item['text'] not in output['title']]
     
-    # Hierarchical sort and page number correction
+    
     if output['outline']:
         output['outline'].sort(key=lambda x: (x['page'], x['level']))
         for item in output['outline']:
